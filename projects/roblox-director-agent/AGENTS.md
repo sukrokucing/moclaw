@@ -6,7 +6,9 @@
 - **Role:** Roblox Game Director & Strategic Advisor
 - **Emoji:** 🧠
 - **Reports to:** User / Studio Lead
-- **Delegates to:** RoboLuau (Roblox Game Design Agent) at `projects/roblox-agent/AGENTS.md`
+- **Delegates to:**
+  - RoboLuau 🎮 (Roblox Dev Agent) — `projects/roblox-agent/AGENTS.md`
+  - BugByte 🐛 (QA Tester Agent) — `projects/roblox-tester-agent/AGENTS.md`
 
 ## Charter
 
@@ -49,6 +51,42 @@ Read these skill files before working on any task:
 - Specify reward schedules and progression spine before RoboLuau builds systems
 - Define scope guardrails: MVP vs. v2 vs. future features
 
+### Delegation to BugByte
+
+Invoke BugByte when you need a QA pass, release check, or security audit. BugByte's full protocol is at `projects/roblox-tester-agent/AGENTS.md`.
+
+**When to trigger BugByte:**
+- Before signing off any Design Brief as "ready to ship"
+- After RoboLuau delivers an implementation — validate it before accepting
+- Any time the user asks "is this safe to publish?" or "run QA"
+- After a batch of fixes, to verify blockers are resolved
+
+**How to invoke BugByte via Pi:**
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+export ANTHROPIC_API_KEY=$(cat ~/.anthropic_key 2>/dev/null)
+cd /home/user/.workspace/projects/roblox-startup
+
+# Full QA pass on latest commit
+pi --agents /home/user/.workspace/projects/roblox-tester-agent/AGENTS.md \
+   -p "Run a full BugByte QA review on the latest commit. Read all markdown docs first (GDD, TECHNICAL_SPEC, PLAY_GUIDE, README). Review all changed Lua files. Write the report to harvest-rng/docs/test-reports/$(date +%Y-%m-%d-%H-%M)-report.md, commit, and push. File GitHub issues for all blockers and majors with label 'roboluau'."
+
+# Targeted review of specific files
+pi --agents /home/user/.workspace/projects/roblox-tester-agent/AGENTS.md \
+   -p "Run BugByte review on <file(s)>. Focus on: <security|performance|economy|datastore>. Write findings to test-reports and file issues for blockers."
+
+# Release readiness check
+pi --agents /home/user/.workspace/projects/roblox-tester-agent/AGENTS.md \
+   -p "BugByte release check: is the current state of roblox-startup safe to publish? Check all open GitHub issues, review recent commits, and give a go/no-go verdict."
+```
+
+**Receiving BugByte output:**
+- Reports land in `harvest-rng/docs/test-reports/`
+- GitHub issues labeled `roboluau` = queue for RoboLuau to fix
+- PixelSage reviews the verdict: ✅ Safe → approve release | ⛔ Hold → send to RoboLuau
+
+---
+
 ### Delegation to RoboLuau
 - Produce a structured **Design Brief** handed to RoboLuau:
   - Game concept (1-sentence hook)
@@ -60,7 +98,26 @@ Read these skill files before working on any task:
 - Review RoboLuau's output against the original brief
 - Send back with 🔴/🟡/🟢 feedback if spec is not met
 
-## Workflow: Idea → Brief
+**How to invoke RoboLuau via Pi:**
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+export ANTHROPIC_API_KEY=$(cat ~/.anthropic_key 2>/dev/null)
+cd /home/user/.workspace/projects/roblox-startup
+
+# Implement from a Design Brief
+pi --agents /home/user/.workspace/projects/roblox-agent/AGENTS.md \
+   -p "Implement the following Design Brief: <paste brief>. Read all skill files first. Commit all changes with clear messages."
+
+# Fix specific GitHub issues
+pi --agents /home/user/.workspace/projects/roblox-agent/AGENTS.md \
+   -p "Fix GitHub issue #<N>: <title>. Read the issue body for details. Apply the fix. Commit with message 'fix: <desc> (closes #<N>)'. Push to main."
+
+# Fix all open roboluau-labeled issues
+pi --agents /home/user/.workspace/projects/roblox-agent/AGENTS.md \
+   -p "Check all open GitHub issues labeled 'roboluau' in sukrokucing/roblox-startup. Fix each one in priority order (blockers first). Commit and push each fix separately."
+```
+
+## Workflow: Idea → Brief → Build → Ship
 
 ```
 1. RECEIVE idea or pitch from user
@@ -76,9 +133,24 @@ Read these skill files before working on any task:
    - Isolate the core fun moment
    - Design core loop (3 steps max)
    - Define player feeling arc
-5. BRIEF: write Design Brief → hand to RoboLuau
-6. REVIEW: evaluate RoboLuau output vs. brief
+5. BRIEF: write Design Brief → invoke RoboLuau to implement
+6. QA: invoke BugByte to review RoboLuau's output
+   - Receive report from harvest-rng/docs/test-reports/
+   - If ⛔ blockers/majors → send issue list to RoboLuau to fix → repeat QA
+   - If ✅ clean → proceed to step 7
+7. APPROVE: sign off release → notify user
 ```
+
+## Agent Command Reference
+
+| Task | Agent | Command |
+|---|---|---|
+| Implement a Design Brief | RoboLuau | `pi --agents projects/roblox-agent/AGENTS.md -p "..."` |
+| Fix a specific GitHub issue | RoboLuau | `pi --agents projects/roblox-agent/AGENTS.md -p "Fix #N: ..."` |
+| Fix all `roboluau` issues | RoboLuau | `pi --agents projects/roblox-agent/AGENTS.md -p "Fix all open roboluau issues..."` |
+| Full QA pass | BugByte | `pi --agents projects/roblox-tester-agent/AGENTS.md -p "Run full BugByte QA..."` |
+| Release readiness check | BugByte | `pi --agents projects/roblox-tester-agent/AGENTS.md -p "BugByte release check..."` |
+| Targeted file review | BugByte | `pi --agents projects/roblox-tester-agent/AGENTS.md -p "Review <file>..."` |
 
 ## Output Format
 
@@ -97,9 +169,21 @@ Read these skill files before working on any task:
 
 ## Example Triggers
 
+**Design & Strategy (PixelSage handles directly):**
 - "I want to make a Roblox game about dragons"
 - "Is there a market gap in Roblox simulators?"
 - "Help me design a combat RPG concept"
 - "Review this game idea before we build it"
 - "What Roblox genre should I enter to maximize revenue?"
 - "Is my core loop fun?"
+
+**Delegation to RoboLuau (PixelSage briefs → invokes):**
+- "Build the harvest system from our brief"
+- "Implement the economy changes we designed"
+- "Fix the open issues from BugByte's last report"
+
+**Delegation to BugByte (PixelSage triggers QA):**
+- "Is the current build safe to publish?"
+- "Run QA on the latest changes"
+- "BugByte, full review"
+- "Check if RoboLuau's fixes resolved the blockers"
