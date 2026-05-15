@@ -139,70 +139,159 @@ grep -c "TypeError\|ParseError" /tmp/luau-analyze.txt || echo "0 type errors"
 
 ## PHASE 2 — Live Simulation via Open Cloud Luau Execution API
 
-This is the most powerful phase. You submit Luau scripts that run **inside the real Roblox engine** against the actual place. You get back return values and full logs.
+This is the most powerful phase. You submit Luau scripts that run **inside the real Roblox engine** against the actual place. You get back return values and structured logs with timestamps and message types.
 
-### Prerequisites
+### Credentials & Config
 
-```bash
-# Open Cloud API key (stored in workspace)
-# Requires scope: luau-execution-sessions:write
-# Set these for Harvest RNG:
-UNIVERSE_ID="<universe_id>"   # from game URL: roblox.com/games/<id>/
-PLACE_ID="<place_id>"
-OC_API_KEY="<open_cloud_api_key>"
+```
+API key:      /home/user/.workspace/secrets/oc_api_key
+Universe ID:  /home/user/.workspace/secrets/oc_universe_id   (create if missing — ask user)
+Place ID:     /home/user/.workspace/secrets/oc_place_id      (create if missing — ask user)
 ```
 
-### How to Submit a Task
+Required API key scopes (set in Roblox Creator Dashboard → API Keys):
+- `universe.place.luau-execution-session:read`
+- `universe.place.luau-execution-session:write`
+
+### Exact API — from official Roblox CI/CD demo
+
+```
+POST https://apis.roblox.com/cloud/v2/universes/{universeId}/places/{placeId}/luau-execution-session-tasks
+  Header: x-api-key: <key>          ← pass the key string directly, no encoding
+  Header: Content-Type: application/json
+  Body:   {"script": "<luau code>", "timeout": "60s"}   ← timeout optional, max "300s"
+
+GET  https://apis.roblox.com/cloud/v2/{task.path}
+  Header: x-api-key: <key>
+  → poll until task.state != "PROCESSING"
+
+GET  https://apis.roblox.com/cloud/v2/{task.path}/logs?view=STRUCTURED
+  Header: x-api-key: <key>
+  → returns structuredMessages with {message, createTime, messageType}
+     messageType values: "MESSAGE" | "WARNING" | "INFORMATION" | "ERROR"
+```
+
+Task states: `PROCESSING` → `COMPLETE` | `FAILED` | `CANCELLED`
+
+### Reusable runner (`/tmp/oc_runner.py`)
 
 ```python
-# /tmp/oc_run.py — reusable runner
-import urllib.request, json, time, sys
+import urllib.request, urllib.error, json, time, sys, os
 
-API_KEY = open("/home/user/.workspace/secrets/oc_api_key").read().strip()
-UNIVERSE_ID = "<universe_id>"
-PLACE_ID = "<place_id>"
+def _get_secret(path):
+    try:
+        return open(path).read().strip()
+    except FileNotFoundError:
+        return None
+
+API_KEY     = _get_secret("/home/user/.workspace/secrets/oc_api_key")
+UNIVERSE_ID = _get_secret("/home/user/.workspace/secrets/oc_universe_id")
+PLACE_ID    = _get_secret("/home/user/.workspace/secrets/oc_place_id")
+
+if not all([API_KEY, UNIVERSE_ID, PLACE_ID]):
+    print("⚠️  Missing OC credentials — skipping simulation phase")
+    print(f"  oc_api_key:      {'✅' if API_KEY else '❌ missing'}")
+    print(f"  oc_universe_id:  {'✅' if UNIVERSE_ID else '❌ missing'}")
+    print(f"  oc_place_id:     {'✅' if PLACE_ID else '❌ missing'}")
+    SIMULATION_AVAILABLE = False
+else:
+    SIMULATION_AVAILABLE = True
+
 BASE = f"https://apis.roblox.com/cloud/v2/universes/{UNIVERSE_ID}/places/{PLACE_ID}"
+HEADERS = {"Content-Type": "application/json", "x-api-key": API_KEY}
 
-def run_luau(script: str, label: str = "test") -> dict:
-    headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
-    
-    # Create task
-    req = urllib.request.Request(
-        f"{BASE}/luau-execution-session-tasks",
-        data=json.dumps({"script": script}).encode(),
-        headers=headers,
-        method="POST"
-    )
-    task = json.loads(urllib.request.urlopen(req).read())
+def _request(url, body=None, method=None):
+    data = json.dumps(body).encode() if body else None
+    m = method or ("POST" if data else "GET")
+    req = urllib.request.Request(url, data=data, headers=HEADERS, method=m)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with urllib.request.urlopen(req) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            err = e.read().decode()
+            if attempt == max_retries - 1:
+                raise RuntimeError(f"HTTP {e.code}: {err}")
+            time.sleep(2 ** attempt)
+
+def run_luau(script: str, label: str = "test", timeout: str = "60s") -> dict:
+    """Submit a Luau script, poll to completion, return structured results."""
+    if not SIMULATION_AVAILABLE:
+        return {"state": "SKIPPED", "output": [], "logs": [], "structured_logs": [], "error": "No credentials"}
+
+    # 1. Create task
+    task = _request(f"{BASE}/luau-execution-session-tasks", {"script": script, "timeout": timeout})
     task_path = task["path"]
-    print(f"[{label}] Task created: {task_path}")
-    
-    # Poll for completion
+    print(f"[{label}] Created: {task_path}")
+
+    # 2. Poll until done
     while True:
-        req = urllib.request.Request(
-            f"https://apis.roblox.com/cloud/v2/{task_path}",
-            headers=headers
-        )
-        task = json.loads(urllib.request.urlopen(req).read())
-        if task["state"] != "PROCESSING":
+        task = _request(f"https://apis.roblox.com/cloud/v2/{task_path}")
+        state = task["state"]
+        if state != "PROCESSING":
+            print(f"[{label}] {state}")
             break
-        time.sleep(3)
         sys.stderr.write(".")
-    
-    # Get logs
-    req = urllib.request.Request(
-        f"https://apis.roblox.com/cloud/v2/{task_path}/logs",
-        headers=headers
-    )
-    logs_resp = json.loads(urllib.request.urlopen(req).read())
-    messages = logs_resp.get("luauExecutionSessionTaskLogs", [{}])[0].get("messages", [])
-    
+        sys.stderr.flush()
+        time.sleep(3)
+    sys.stderr.write("\n")
+
+    # 3. Fetch structured logs (includes messageType + timestamp)
+    logs_resp = _request(f"https://apis.roblox.com/cloud/v2/{task_path}/logs?view=STRUCTURED")
+    log_entry = logs_resp.get("luauExecutionSessionTaskLogs", [{}])[0]
+    flat_messages   = log_entry.get("messages", [])
+    structured_msgs = log_entry.get("structuredMessages", [])
+
     return {
-        "state": task["state"],
-        "output": task.get("output", {}).get("results", []),
-        "logs": messages,
-        "error": task.get("error")
+        "state":           state,
+        "output":          task.get("output", {}).get("results", []),
+        "logs":            flat_messages,
+        "structured_logs": structured_msgs,   # [{message, createTime, messageType}]
+        "error":           task.get("error"),
     }
+```
+
+### Log Forensics with Structured Logs
+
+The `structured_logs` field gives you `messageType` per entry — use this for precision:
+
+```python
+def analyze_structured_logs(structured_logs: list[dict], test_name: str) -> list[dict]:
+    import re
+    findings = []
+
+    PATTERNS = [
+        (r"attempt to index nil|attempt to call nil|attempt to index a nil value", "🔴", "Nil dereference crash"),
+        (r"stack overflow",                    "🔴", "Stack overflow / infinite recursion"),
+        (r"Script timeout|script timeout",     "🔴", "Infinite loop / script timeout"),
+        (r"FAIL:",                             "🔴", "Simulation assertion failed"),
+        (r"DataStoreService:",                 "🟡", "DataStore operation issue"),
+        (r"Request was throttled",             "🟡", "DataStore rate limit hit"),
+        (r"Rate limit exceeded",               "🟡", "RemoteEvent rate limit triggered"),
+        (r"bad argument #\d+",                 "🟡", "Wrong argument type passed"),
+        (r"Expected .* got",                   "🟡", "Value mismatch"),
+        (r"Heartbeat took",                    "🟡", "Heartbeat performance spike"),
+    ]
+
+    for entry in structured_logs:
+        msg      = entry.get("message", "")
+        msg_type = entry.get("messageType", "MESSAGE")
+        ts       = entry.get("createTime", "")
+
+        # Engine-reported errors/warnings always get flagged
+        if msg_type == "ERROR":
+            findings.append({"severity": "🔴", "label": "Engine error", "log": msg, "test": test_name, "ts": ts})
+        elif msg_type == "WARNING":
+            findings.append({"severity": "🟡", "label": "Engine warning", "log": msg, "test": test_name, "ts": ts})
+
+        # Pattern matching on content regardless of type
+        for pattern, severity, label in PATTERNS:
+            if re.search(pattern, msg, re.IGNORECASE):
+                findings.append({"severity": severity, "label": label, "log": msg, "test": test_name, "ts": ts})
+                break
+
+    return findings
 ```
 
 ### Simulation Script 1 — RNG Distribution Validator
@@ -420,61 +509,29 @@ for name, script in SCRIPTS.items():
 
 ## PHASE 3 — Log Forensics
 
-After each simulation run, parse the logs for known failure signatures.
-
-### Failure Pattern Detection
+After each simulation run, parse `structured_logs` (preferred — has timestamps + messageType) or fall back to flat `logs`.
 
 ```python
-def analyze_logs(logs: list[str], test_name: str) -> list[dict]:
-    findings = []
-    
-    PATTERNS = [
-        # Nil dereferences
-        (r"attempt to index nil", "🔴", "Nil dereference crash"),
-        (r"attempt to call nil", "🔴", "Nil function call crash"),
-        (r"attempt to index a nil value", "🔴", "Nil index crash"),
-        # DataStore failures
-        (r"DataStoreService:", "🟡", "DataStore operation issue"),
-        (r"GetAsync failed", "🟡", "DataStore read failure"),
-        (r"SetAsync failed", "🟡", "DataStore write failure"),
-        (r"Request was throttled", "🟡", "DataStore rate limit hit"),
-        # RemoteEvent abuse signals
-        (r"Rate limit exceeded", "🟡", "RemoteEvent rate limit triggered"),
-        (r"Firing RemoteEvent too frequently", "🟡", "RemoteEvent spam detected"),
-        # Economy/logic failures
-        (r"FAIL:", "🔴", "Simulation assertion failed"),
-        (r"Expected .* got", "🟡", "Value mismatch detected"),
-        # Performance signals
-        (r"Script timeout", "🔴", "Infinite loop / timeout"),
-        (r"Heartbeat took", "🟡", "Heartbeat performance spike"),
-        # Stack overflow
-        (r"stack overflow", "🔴", "Stack overflow / infinite recursion"),
-        # Type errors at runtime
-        (r"bad argument #\d+ .* expected .* got", "🟡", "Wrong argument type"),
-    ]
-    
-    import re
-    for log in logs:
-        for pattern, severity, label in PATTERNS:
-            if re.search(pattern, log, re.IGNORECASE):
-                findings.append({
-                    "severity": severity,
-                    "label": label,
-                    "log": log,
-                    "test": test_name,
-                })
-    
-    return findings
-
-# Apply to all simulation results
+# Apply to all simulation results (analyze_structured_logs defined in Phase 2 runner)
 all_log_findings = []
 for name, result in results.items():
-    findings = analyze_logs(result["logs"], name)
+    if result["structured_logs"]:
+        findings = analyze_structured_logs(result["structured_logs"], name)
+    else:
+        # Fallback: flat log pattern matching
+        findings = analyze_structured_logs(
+            [{"message": m, "messageType": "MESSAGE", "createTime": ""} for m in result["logs"]],
+            name
+        )
     all_log_findings.extend(findings)
 
 blockers = [f for f in all_log_findings if f["severity"] == "🔴"]
 majors   = [f for f in all_log_findings if f["severity"] == "🟡"]
 print(f"\nLog forensics: {len(blockers)} blockers, {len(majors)} majors from logs")
+for f in blockers:
+    print(f"  🔴 [{f['test']}] {f['label']}: {f['log'][:100]}")
+for f in majors:
+    print(f"  🟡 [{f['test']}] {f['label']}: {f['log'][:100]}")
 ```
 
 ---
