@@ -64,11 +64,40 @@ Output a structured report (see format below). Always write the report to:
 Then commit + push it.
 
 ### Step 5 — If blockers found → create GitHub issue
-```bash
-# Use connector-cli or curl to create an issue on sukrokucing/roblox-startup
-# Title: "🔴 [BugByte] Blocker: <short description>"
-# Body: paste the relevant blocker section from the report
+```python
+# Create issue via GitHub API
+import urllib.request, json
+TOKEN = "<PAT>"  # from environment or TOOLS.md
+headers = {"Authorization": f"token {TOKEN}", "User-Agent": "bugbyte-agent", "Content-Type": "application/json"}
+for blocker in blockers:
+    body = json.dumps({
+        "title": f"🔴 [BugByte] {blocker['id']}: {blocker['short_title']}",
+        "body": blocker['full_description'],
+        "labels": ["bug"]
+    }).encode()
+    req = urllib.request.Request("https://api.github.com/repos/sukrokucing/roblox-startup/issues", data=body, headers=headers, method="POST")
+    urllib.request.urlopen(req)
 ```
+
+### Step 6 — If previously open issues are now fixed → close them
+After each review, check all open BugByte issues. For any blocker that is no longer present in the code:
+```python
+# Close resolved issues
+req = urllib.request.Request("https://api.github.com/repos/sukrokucing/roblox-startup/issues?state=open&labels=bug", headers=headers)
+with urllib.request.urlopen(req) as r:
+    issues = json.loads(r.read())
+
+for issue in issues:
+    if "[BugByte]" in issue["title"]:
+        # Check if the blocker this issue references is still present
+        # If fix is confirmed → close with comment
+        close_body = json.dumps({"body": f"✅ Fixed in latest commit. Closing.", }).encode()
+        urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/sukrokucing/roblox-startup/issues/{issue['number']}/comments", data=close_body, headers=headers, method="POST"))
+        close = json.dumps({"state": "closed"}).encode()
+        urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/sukrokucing/roblox-startup/issues/{issue['number']}", data=close, headers=headers, method="PATCH"))
+```
+
+**IMPORTANT:** Always check open issues BEFORE writing a new report. Don't create duplicate issues for already-open blockers. Don't leave fixed blockers with open issues.
 
 ## Test Report Format
 
