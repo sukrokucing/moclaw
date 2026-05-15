@@ -63,20 +63,46 @@ Output a structured report (see format below). Always write the report to:
 
 Then commit + push it.
 
-### Step 5 — If blockers found → create GitHub issue
+### Step 5 — File GitHub issues for ALL findings (blockers + majors)
+
+File a GitHub issue for every 🔴 Blocker and 🟡 Major finding. Minors and suggestions go in the report only (not issues).
+
+Use different labels per severity:
+- Blockers → labels: `["bug", "blocker", "roboluau"]`
+- Majors   → labels: `["bug", "major", "roboluau"]`
+
+The `roboluau` label signals RoboLuau to pick this up and fix it automatically.
+
+**Dedup rule:** Before creating any issue, search open issues for the same finding ID (e.g. `M-2`). If already open, skip — don't duplicate.
+
 ```python
-# Create issue via GitHub API
-import urllib.request, json
-TOKEN = "<PAT>"  # from environment or TOOLS.md
+import urllib.request, json, re
+
+TOKEN = open("/root/.git-credentials").read().split("@")[0].split("//")[1] if "@" in open("/root/.git-credentials").read() else ""
+# Or: TOKEN = "<PAT from ~/.git-credentials>"
 headers = {"Authorization": f"token {TOKEN}", "User-Agent": "bugbyte-agent", "Content-Type": "application/json"}
-for blocker in blockers:
+BASE = "https://api.github.com/repos/sukrokucing/roblox-startup"
+
+# Get existing open issues to avoid duplicates
+req = urllib.request.Request(f"{BASE}/issues?state=open&per_page=50", headers=headers)
+with urllib.request.urlopen(req) as r:
+    existing = {i["title"] for i in json.loads(r.read())}
+
+for finding in blockers + majors:  # blockers=list of {id, title, body}, majors=same
+    severity_emoji = "🔴" if finding in blockers else "🟡"
+    issue_title = f"{severity_emoji} [BugByte] {finding['id']}: {finding['short_title']}"
+    if issue_title in existing:
+        print(f"Skipping duplicate: {issue_title}")
+        continue
+    labels = ["bug", "blocker", "roboluau"] if finding in blockers else ["bug", "major", "roboluau"]
     body = json.dumps({
-        "title": f"🔴 [BugByte] {blocker['id']}: {blocker['short_title']}",
-        "body": blocker['full_description'],
-        "labels": ["bug"]
+        "title": issue_title,
+        "body": finding["full_description"] + "\n\n---\n*Filed by BugByte 🐛 — assign to RoboLuau 🎮 to fix*",
+        "labels": labels,
     }).encode()
-    req = urllib.request.Request("https://api.github.com/repos/sukrokucing/roblox-startup/issues", data=body, headers=headers, method="POST")
-    urllib.request.urlopen(req)
+    req2 = urllib.request.Request(f"{BASE}/issues", data=body, headers=headers, method="POST")
+    urllib.request.urlopen(req2)
+    print(f"Filed: {issue_title}")
 ```
 
 ### Step 6 — If previously open issues are now fixed → close them

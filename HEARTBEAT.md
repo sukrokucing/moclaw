@@ -26,9 +26,46 @@ Check for new commits in `sukrokucing/roblox-startup` since last check.
    - Apply BugByte review protocol from `projects/roblox-tester-agent/AGENTS.md`
    - Write report to `harvest-rng/docs/test-reports/YYYY-MM-DD-HH-MM-report.md`
    - Commit + push report
+   - File GitHub issues for all 🔴 Blockers and 🟡 Majors with label `roboluau` (Step 5 in AGENTS.md)
    - Close any GitHub issues whose blocker is now fixed (Step 6 in AGENTS.md)
    - Update timestamp: `date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/bugbyte-last-check`
-4. If no new commits → `HEARTBEAT_OK`
+4. If no new commits → check RoboLuau queue (Step below)
+5. → `HEARTBEAT_OK`
+
+---
+
+## 🎮 RoboLuau — Auto-Fix Trigger
+
+After BugByte check (or independently), check for open GitHub issues labeled `roboluau`:
+
+```python
+import urllib.request, json
+
+TOKEN = open("/home/user/.git-credentials").read().split("@")[0].split("//")[-1]
+headers = {"Authorization": f"token {TOKEN}", "User-Agent": "moclaw-heartbeat"}
+req = urllib.request.Request(
+    "https://api.github.com/repos/sukrokucing/roblox-startup/issues?state=open&labels=roboluau&per_page=10",
+    headers=headers
+)
+with urllib.request.urlopen(req) as r:
+    issues = json.loads(r.read())
+print(f"RoboLuau queue: {len(issues)} issues")
+for i in issues:
+    print(f"  #{i['number']} {i['title']}")
+```
+
+If issues found → **invoke RoboLuau via Pi** to fix them:
+
+```bash
+export PATH="$HOME/.npm-global/bin:$PATH"
+export ANTHROPIC_API_KEY=$(cat ~/.anthropic_key 2>/dev/null || echo "")
+cd /home/user/.workspace/projects/roblox-startup
+
+# For each open roboluau-labeled issue:
+pi -p "Fix GitHub issue #<N>: <title>. Read the issue body for details. Apply the fix described. Commit with message 'fix: <short desc> (closes #<N>)'. Push to main."
+```
+
+After RoboLuau fixes and pushes → BugByte CI will re-run automatically and close the issue if checks pass.
 
 ### State file: `/tmp/bugbyte-last-check`
 ### Repo clone: `/tmp/roblox-startup`
