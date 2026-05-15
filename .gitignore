@@ -1,3 +1,6 @@
+secrets/
+tasks/
+*.pyc
+__pycache__/
 .camoufox-cli/
 *.log
-.moclaw/
